@@ -1,0 +1,120 @@
+---
+title: "data_manipulation_testing"
+author: "Peter Silverstein"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(httr)
+library(stringr)
+library(purrr)
+library(rstanarm)
+library(arm)
+library(sf)
+library(jsonlite)
+library(geojsonsf)
+```
+
+```{r}
+# Getting MTA Bus Speed Data via API
+
+# 2015-2019: https://data.ny.gov/Transportation/MTA-Bus-Speeds-2015-2019/cudb-vcni/about_data
+url <- "https://data.ny.gov/resource/cudb-vcni.json?$limit=100000"
+res <- GET(url)
+df_15_19 <- tibble(fromJSON(content(res, "text"), flatten = TRUE)) %>%
+  mutate(date = str_split_fixed(month, "T", 2)[, 1]) %>%
+  select(!month) %>%
+  mutate(
+    day_type = as.numeric(day_type),
+    total_operating_time = as.numeric(total_operating_time),
+    total_mileage = as.numeric(total_mileage),
+    average_speed = as.numeric(average_speed),
+    date = as.Date(date)
+  )
+
+# 2020-2024: https://data.ny.gov/Transportation/MTA-Bus-Speeds-2020-2024/6ksi-7cxr/about_data
+url <- "https://data.ny.gov/resource/6ksi-7cxr.json?$limit=100000"
+res <- GET(url)
+df_20_24 <- tibble(fromJSON(content(res, "text"), flatten = TRUE)) %>%
+  mutate(date = str_split_fixed(month, "T", 2)[, 1]) %>%
+  select(!month) %>%
+  relocate(total_operating_time, .before = total_mileage) %>%
+  mutate(
+    day_type = as.numeric(day_type),
+    total_operating_time = as.numeric(total_operating_time),
+    total_mileage = as.numeric(total_mileage),
+    average_speed = as.numeric(average_speed),
+    date = as.Date(date)
+  )
+
+# 2025: https://data.ny.gov/Transportation/MTA-Bus-Speeds-Beginning-2025/4u4b-jge6/about_data 
+url <- "https://data.ny.gov/resource/4u4b-jge6.json?$limit=100000"
+res <- GET(url)
+df_25 <- tibble(fromJSON(content(res, "text"), flatten = TRUE)) %>%
+  mutate(date = str_split_fixed(month, "T", 2)[, 1]) %>%
+  select(!month) %>%
+  mutate(
+    day_type = as.numeric(day_type),
+    total_operating_time = as.numeric(total_operating_time),
+    total_mileage = as.numeric(total_mileage),
+    average_speed = as.numeric(average_speed),
+    date = as.Date(date)
+  )
+
+df_combined <- rbind(df_1, df_2, df_3) %>%
+  mutate(
+    total_mileage = round(total_mileage, 1),
+    average_speed = round(average_speed, 2)
+    ) %>%
+  mutate(
+    year = str_split_fixed(date, "-", 3)[, 1],
+    month = str_split_fixed(date, "-", 3)[, 2]
+  ) %>%
+  select(!date)
+```
+
+```{r}
+df_speeds <- df_combined %>%
+  mutate(
+    borough = as.factor(borough),
+    trip_type = as.factor(trip_type),
+    route_id = as.factor(route_id),
+    period = as.factor(period),
+    year = as.factor(year),
+    month = as.factor(month)
+  )
+summary(df_speeds)
+```
+
+```{r}
+# Loading Bus Lanes - Local Streets: https://data.cityofnewyork.us/Transportation/Bus-Lanes-Local-Streets/ycrg-ses3/about_data 
+url <- "https://data.cityofnewyork.us/resource/ycrg-ses3.json?$limit=5000"
+res <- GET(url)
+local_streets <- fromJSON(content(res, "text"), flatten = TRUE)
+
+# Create GeoJSON strings for each row from the_geom.type and the_geom.coordinates
+geojson_strings <- mapply(function(t, coords) {
+  toJSON(list(type = t, coordinates = coords), auto_unbox = TRUE)
+}, local_streets$the_geom.type, local_streets$the_geom.coordinates)
+
+# Convert each GeoJSON geometry string to sf geometry objects
+geoms_sf <- geojsonsf::geojson_sf(paste0('{"type":"Feature","geometry":', geojson_strings, '}'))
+
+# Combine geometries with attributes (dropping original the_geom columns)
+bus_lanes_sf <- st_sf(local_streets[, !(names(local_streets) %in% c("the_geom.type", "the_geom.coordinates", "the_geom"))], geometry = geoms_sf$geometry)
+
+# Coordinate reference system likely WGS84
+st_crs(bus_lanes_sf) <- 4326
+```
+
+
+
+
+
+
+
+
+
+
