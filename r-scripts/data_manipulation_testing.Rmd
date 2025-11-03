@@ -11,10 +11,10 @@ library(httr)
 library(stringr)
 library(purrr)
 library(rstanarm)
-library(arm)
 library(sf)
 library(jsonlite)
 library(geojsonsf)
+library(lwgeom)
 ```
 
 ```{r}
@@ -63,7 +63,7 @@ df_25 <- tibble(fromJSON(content(res, "text"), flatten = TRUE)) %>%
     date = as.Date(date)
   )
 
-df_combined <- rbind(df_1, df_2, df_3) %>%
+df_combined <- rbind(df_15_19, df_20_24, df_25) %>%
   mutate(
     total_mileage = round(total_mileage, 1),
     average_speed = round(average_speed, 2)
@@ -109,7 +109,49 @@ bus_lanes_sf <- st_sf(local_streets[, !(names(local_streets) %in% c("the_geom.ty
 st_crs(bus_lanes_sf) <- 4326
 ```
 
+```{r}
+# Loading Bus Route Geometries: https://data.ny.gov/Transportation/MTA-Bus-Routes/bzwk-3hb4/explore/query/SELECT%0A%20%20%60valid_from%60%2C%0A%20%20%60valid_to%60%2C%0A%20%20%60route_id%60%2C%0A%20%20%60route_short_name%60%2C%0A%20%20%60route_long_name%60%2C%0A%20%20%60route_description%60%2C%0A%20%20%60trip_type%60%2C%0A%20%20%60route_type%60%2C%0A%20%20%60bundle%60%2C%0A%20%20%60route_color%60%2C%0A%20%20%60direction_id%60%2C%0A%20%20%60direction%60%2C%0A%20%20%60shape_id%60%2C%0A%20%20%60vertices%60%2C%0A%20%20%60shape_length%60%2C%0A%20%20%60min_longitude%60%2C%0A%20%20%60min_latitude%60%2C%0A%20%20%60max_longitude%60%2C%0A%20%20%60max_latitude%60%2C%0A%20%20%60geometry%60%0AWHERE%20%60valid_to%60%20%3E%20%222025-01-01T11%3A13%3A22%22%20%3A%3A%20floating_timestamp%0AORDER%20BY%0A%20%20%60valid_from%60%20DESC%20NULL%20LAST%2C%0A%20%20%60route_id%60%20ASC%20NULL%20LAST%2C%0A%20%20%60valid_to%60%20DESC%20NULL%20LAST/page/filter
 
+route_shapes <- read_csv("../data/MTA_Bus_Routes.csv")
+colnames(route_shapes) <- gsub(" ", "_", colnames(route_shapes))
+
+route_shapes <- route_shapes %>%
+  filter(Route_Type %in% c("Local", "Express", "SBS")) %>%
+  filter(Route_ID %in% unique(df_combined$route_id))
+
+route_shapes$Geometry <- st_as_sfc(route_shapes$Geometry, crs=4326)
+invalid = !st_is_valid(route_shapes$Geometry)
+if (any(invalid)) {
+  route_shapes$Geometry[invalid] <- st_make_valid(route_shapes$Geometry[invalid])
+}
+route_shapes_sf <- st_sf(route_shapes)
+```
+
+```{r}
+# Merging Route Shapes to 1 per Route_ID, Direction
+threshold <- 100  # distance threshold in CRS units, e.g., meters
+
+merged_routes_list <- route_shapes %>%
+  group_by(Route_ID, Direction) %>%
+  group_map(~ {
+    dist_matrix <- st_distance(.x$Geometry)
+    hc <- hclust(as.dist(dist_matrix))
+    clusters <- cutree(hc, h = threshold)
+    
+    .x$cluster <- clusters
+
+    .x %>%
+      group_by(cluster) %>%
+      summarize(
+        Route_ID = first(Route_ID),
+        Direction = first(Direction),
+        geometry = st_union(Geometry),
+        .groups = "drop"
+      )
+  }, .keep = TRUE)
+
+merged_routes <- do.call(rbind, merged_routes_list)
+```
 
 
 
