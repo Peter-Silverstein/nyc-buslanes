@@ -15,6 +15,9 @@ library(sf)
 library(jsonlite)
 library(geojsonsf)
 library(lwgeom)
+library(units)
+library(zoo)
+library(lme4)
 ```
 
 ```{r}
@@ -82,8 +85,9 @@ df_speeds <- df_combined %>%
     trip_type = as.factor(trip_type),
     route_id = as.factor(route_id),
     period = as.factor(period),
+    date = as.yearmon(paste(year, month), "%Y %m"),
     year = as.factor(year),
-    month = as.factor(month)
+    month = as.factor(month),
   )
 summary(df_speeds)
 ```
@@ -129,7 +133,7 @@ route_shapes_sf <- st_sf(route_shapes)
 
 ```{r}
 # Merging Route Shapes to 1 per Route_ID, Direction
-threshold <- 100  # distance threshold in CRS units, e.g., meters
+threshold <- 50  # distance threshold in CRS units, e.g., meters
 
 merged_routes_list <- route_shapes %>%
   group_by(Route_ID, Direction) %>%
@@ -151,12 +155,91 @@ merged_routes_list <- route_shapes %>%
   }, .keep = TRUE)
 
 merged_routes <- do.call(rbind, merged_routes_list)
+merged_routes <- st_as_sf(merged_routes)
 ```
 
+```{r}
+# Showing that lower bound of segment length for lanes is 25 feet, so that'll be the minimum intersection distance
+bus_lanes_sf_reproj2263 <- st_transform(bus_lanes_sf, 2263)
+bus_lanes_sf_reproj2263$length <- st_length(bus_lanes_sf_reproj2263$geometry)
 
+filt = bus_lanes_sf_reproj2263 %>%
+  filter(length < set_units(250, "ft"))
+hist(filt$length, breaks = 100)
+```
 
+```{r}
+# Intersect Bus Routes and Bus Lanes
 
+# Initial intersection
+line_intersections <- st_intersection(bus_lanes_sf, merged_routes)
 
+# Convert MULTIPOINT to LINESTRING function
+convert_multipoint_to_linestring <- function(geom) {
+  if (inherits(geom, "MULTIPOINT")) {
+    combined_geom <- st_combine(geom)
+    ls <- st_cast(combined_geom, "LINESTRING")
+    return(ls[[1]])  # extract the sfg LINESTRING, not a list
+  }
+  return(geom)
+}
 
+new_geoms <- lapply(line_intersections$geometry, convert_multipoint_to_linestring)
+
+# 'new_geoms' is now a list of individual sfg objects suitable for st_sfc()
+new_geoms_sfc <- st_sfc(new_geoms, crs = st_crs(line_intersections))
+
+st_geometry(line_intersections) <- new_geoms_sfc
+
+line_intersections <- st_transform(line_intersections, 2263)
+
+# Compute length on updated geometries
+line_intersections$length_ft <- st_length(line_intersections)
+
+# Filter by minimum length 25 feet
+filtered_intersections_25 <- line_intersections[line_intersections$length_ft >= set_units(25, "ft"), ]
+```
+
+```{r}
+# Cleaning up Intersection DF
+intersection_cleaned <- filtered_intersections_25 %>%
+  select(boro, hours, days, lane_type1, open_dates, Route_ID) %>%
+  mutate(open_date_str = sapply(str_split(open_dates, ","), `[`, 1)) %>%
+  mutate(open_date = parse_date_time(open_date_str, orders = c("%m/%d/%Y", "%m/%d/%y"))) %>%
+  select(-open_date_str, -open_dates) %>%
+  filter(!is.na(open_date)) %>%
+  st_drop_geometry()
+
+# Filtering to single instance of each bus route 
+intersection_final <- intersection_cleaned %>%
+  group_by(Route_ID) %>%
+  arrange(open_date, .by_group = TRUE) %>%
+  filter(row_number() == 1)
+```
+
+```{r}
+# Joining intersection_final to df_speeds
+df_complete <- df_speeds %>%
+  left_join(intersection_final, by = join_by(route_id == Route_ID)) %>%
+  mutate(date = as.Date(date)) %>%
+  mutate(treatment = case_when(
+    open_date < date ~ 1,
+    TRUE ~ 0
+  ))
+```
+
+```{r}
+# Cheeky Regression
+fit <- lmer(average_speed ~ 
+              treatment + 
+              log(total_mileage) + 
+              (1 | month) + 
+              (1 | year) +
+              (1 | day_type) +
+              (1 | trip_type) +
+              (1 | borough) +
+              (1 | period), data = df_complete)
+summary(fit)
+```
 
 
