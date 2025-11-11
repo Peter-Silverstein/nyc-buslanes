@@ -111,6 +111,9 @@ bus_lanes_sf <- st_sf(local_streets[, !(names(local_streets) %in% c("the_geom.ty
 
 # Coordinate reference system likely WGS84
 st_crs(bus_lanes_sf) <- 4326
+
+bus_lanes_sf <- bus_lanes_sf %>%
+  distinct(segmentid, .keep_all = TRUE)
 ```
 
 ```{r}
@@ -156,6 +159,11 @@ merged_routes_list <- route_shapes %>%
 
 merged_routes <- do.call(rbind, merged_routes_list)
 merged_routes <- st_as_sf(merged_routes)
+
+merged_routes <- merged_routes %>%
+  group_by(Route_ID) %>%
+  summarize(geometry = st_union(geometry)) %>%
+  ungroup()
 ```
 
 ```{r}
@@ -203,18 +211,29 @@ filtered_intersections_25 <- line_intersections[line_intersections$length_ft >= 
 ```{r}
 # Cleaning up Intersection DF
 intersection_cleaned <- filtered_intersections_25 %>%
-  select(boro, hours, days, lane_type1, open_dates, Route_ID) %>%
+  select(boro, hours, days, lane_type1, open_dates, Route_ID, length_ft) %>%
   mutate(open_date_str = sapply(str_split(open_dates, ","), `[`, 1)) %>%
   mutate(open_date = parse_date_time(open_date_str, orders = c("%m/%d/%Y", "%m/%d/%y"))) %>%
   select(-open_date_str, -open_dates) %>%
   filter(!is.na(open_date)) %>%
-  st_drop_geometry()
+  st_drop_geometry() %>%
+  arrange(Route_ID, open_date)
+```
 
-# Filtering to single instance of each bus route 
+```{r}
+# Aggregating bus lanes to date opened, NOTE THAT LOST SOME LANE CHARACTERISTICS
 intersection_final <- intersection_cleaned %>%
-  group_by(Route_ID) %>%
-  arrange(open_date, .by_group = TRUE) %>%
-  filter(row_number() == 1)
+  group_by(Route_ID, open_date) %>%
+  summarize(tot_buslane_ft = sum(length_ft))
+
+intersection_final <- intersection_final %>%
+  arrange(Route_ID, open_date) %>%
+  mutate(tot_buslane_ft = as.numeric(tot_buslane_ft)) %>%
+  filter(tot_buslane_ft > 100)
+
+# Filtering for Post-Pandemic
+intersection_postpandemic <- intersection_final %>%
+  filter(open_date > as.Date("2021-12-31"))
 ```
 
 ```{r}
@@ -228,18 +247,6 @@ df_complete <- df_speeds %>%
   ))
 ```
 
-```{r}
-# Cheeky Regression
-fit <- lmer(average_speed ~ 
-              treatment + 
-              log(total_mileage) + 
-              (1 | month) + 
-              (1 | year) +
-              (1 | day_type) +
-              (1 | trip_type) +
-              (1 | borough) +
-              (1 | period), data = df_complete)
-summary(fit)
-```
+
 
 
