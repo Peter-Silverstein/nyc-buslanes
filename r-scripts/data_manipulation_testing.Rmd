@@ -309,15 +309,68 @@ df_complete <- df_complete %>%
 ```
 
 ```{r}
-fit <- lmer(average_speed ~ 
-              lane_perc + 
-              (1 | month) + 
-              (1 | year) + 
-              (1 | Route_ID) + 
-              (1 | borough),
-            data = df_complete)
+# Stan-ifying data (turning everything to a number)
+## Desired Final Columns
+  ### Route_ID -- to factor
+  ### day_type -- 1 == Weekday, 2 == Weekend
+  ### period -- to factor, 1 == peak, 0 == off-peak
+  ### bus_lane_ft -- numeric
+  ### borough -- to factor, 1 = M, 2 = BX, 3 = BK, 4 = Q, 5 = S
+  ### trip_type -- to factor, EXP = 1, LCL/LTD = 2, SBS = 3
+  ### average_speed -- outcome! in mph
+  ### year -- MLM level
+  ### month -- MLM level
+  ### lane_perc -- Treatment
+  ### lane_miles -- Treatment (alternative)
 
-summary(fit)
+df_modeling <- df_complete %>%
+  select(
+    Route_ID,
+    day_type,
+    period,
+    bus_lane_ft,
+    borough,
+    trip_type,
+    average_speed,
+    year,
+    month,
+    lane_perc,
+    lane_miles
+  ) %>%
+  mutate(
+    route_num = as.integer(factor(Route_ID)),
+    period = case_when(
+      period == 'Peak' ~ 1,
+      period == 'Off-Peak' ~ 0,
+      TRUE ~ NaN
+      ),
+    borough = case_when(
+      borough == 'Manhattan' ~ 1,
+      borough == 'Bronx' ~ 2,
+      borough == 'Brooklyn' ~ 3,
+      borough == 'Queens' ~ 4,
+      borough == 'Staten Island' ~ 5,
+      TRUE ~ NaN
+      ),
+    trip_type = case_when(
+      trip_type == 'EXP' ~ 1,
+      trip_type == 'LCL/LTD' ~ 2,
+      trip_type == 'SBS' ~ 3,
+      TRUE ~ NaN
+      ),
+    day_type = day_type - 1
+  ) %>%
+  rename(
+    'peak' = 'period',
+    'weekend' = 'day_type'
+  )
+
+summary(df_modeling)
+```
+
+```{r}
+# Saving file
+write_csv(df_modeling, "../data/final_modeling_data.csv")
 ```
 
 

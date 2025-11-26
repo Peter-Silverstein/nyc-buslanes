@@ -1,0 +1,167 @@
+---
+title: "stan_modeling"
+author: "Peter Silverstein"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(cmdstanr)
+library(rstanarm)
+```
+
+```{r}
+# Load in data
+df <- read_csv("../data/final_modeling_data.csv")
+df <- df %>%
+  filter(year > 2021) %>%
+  mutate(year = year - 2021) %>%
+  filter(peak == 1)
+```
+
+```{r}
+# Model 1: simple regression of continuous treatment on outcome variable
+set.seed(55)
+
+fit1 <- stan_glm(average_speed ~ lane_perc,
+                  data = df,
+                  refresh = FALSE,
+                  cores = 4)
+
+summary(fit1, digits = 3)
+
+# Interpretation: average speed across the sample was 9.447 mph, an increase of 1 in lane_perc (+ 1 percentage point additional lane coverage) is associated with an increase of 1.2 mph on average
+
+# R-Hat: all at 1.0
+```
+
+```{r}
+# Model 2: regression of continuous treatment on outcome variable, plus covariates
+set.seed(55)
+
+fit2 <- stan_glm(average_speed ~ lane_perc + 
+                   as.factor(borough) + 
+                   as.factor(year) + 
+                   as.factor(month),
+                  data = df,
+                  refresh = FALSE,
+                  cores = 4)
+
+summary(fit2, digits = 3)
+
+# Interpretation: average speed across the sample for Manhattan was 6.662 mph, an increase of 1 in lane_perc (+ 1 percentage point additional lane coverage) is associated with an increase of 1.1 mph on average
+
+# R-Hat: all at 1.0
+```
+
+```{r}
+# Model 3: regression of continuous treatment on outcome variable, plus covariates, plus varying treatment effect by borough
+set.seed(55)
+
+fit3 <- stan_glm(average_speed ~ lane_perc + 
+                   lane_perc:as.factor(borough) + 
+                   as.factor(borough) + 
+                   as.factor(year) + 
+                   as.factor(month),
+                  data = df,
+                  refresh = FALSE,
+                  cores = 4)
+
+summary(fit3, digits = 3)
+
+# Interpretation: 
+## M Effect: 1.28 -> 1.3
+## BX Effect: 1.28 + 0.28 = 1.56 -> 1.6
+## BK Effect: 1.28 + 2.03 = 3.31 -> 3.3
+## Q Effect: 1.28 - 0.75 = 0.53 -> 0.5
+## S Effect: 1.28 + 1.79 = 3.07-> 3.1
+
+# R-Hat: all at 1.0
+```
+
+```{r}
+# Stan setup
+N <- as.numeric(nrow(df))
+y <- as.numeric(df$average_speed)
+z <- as.numeric(df$lane_perc)
+I <- max(as.numeric(df$year))
+i_index <- as.numeric(df$year)
+J <- max(as.numeric(df$month))
+j_index <- as.numeric(df$month)
+L <- max(as.numeric(df$borough))
+l_index <- as.numeric(df$borough)
+R <- max(as.numeric(df$route_num))
+r_index <- as.numeric(df$route_num)
+
+data <- list(
+  N = N,
+  y = y,
+  z = z,
+  I = I,
+  i_index = i_index,
+  J = J,
+  j_index = j_index,
+  L = L,
+  l_index = l_index,
+  R = R,
+  r_index = r_index
+)
+```
+
+
+```{r}
+# Model 4: regression of continuous treatment on outcome variable, plus covariates, plus route_id mlm
+model4 <- cmdstan_model("../stan/model4.stan")
+
+set.seed(55)
+
+fit4 <- model4$sample(data = data, parallel_chains = 4, refresh = 0)
+
+# Interpretation: average speed across the sample was 9.17320279 mph, an increase of 1 in lane_perc (+ 1 percentage point additional lane coverage) is associated with an increase of 0.45008774 mph on average
+
+# R-Hat: all well below 1.1
+```
+
+```{r}
+# fit4$save_object(file = "../stan_models/fit4_saved.rds")
+fit4$summary(variables = c("beta0", "theta", "sigma", "sigma_r", "beta_i", "beta_j", "beta_l"))
+```
+
+```{r}
+# Model 5: regression of continuous treatment on outcome variable, plus covariates, plus route_id mlm, plus borough-level treatment interaction
+model5 <- cmdstan_model("../stan/model5.stan")
+
+set.seed(55)
+
+fit5 <- model5$sample(data = data, parallel_chains = 4, refresh = 0)
+
+# Interpretation: average speed across the sample for Manhattan was 6.662 mph, an increase of 1 in lane_perc (+ 1 percentage point additional lane coverage) is associated with an increase of 1.1 mph on average
+
+# R-Hat: all at 1.0
+```
+
+```{r}
+fit5$save_object(file = "../stan_models/fit5_saved.rds")
+fit5$summary(variables = c("beta0", "theta", "beta_l_z", "sigma", "sigma_r", "beta_i", "beta_j", "beta_l"))
+```
+
+Further modeling thoughts
+1. set up a baseline treatment indicator
+2. what does the borough-level effect tell us?
+3. run a version where first observation has 0, how do the coefs change (sensitivity analysis)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
