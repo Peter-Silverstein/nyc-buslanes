@@ -238,7 +238,7 @@ final_filtered_intersections <- trimmed_intersections[trimmed_intersections$leng
 
 ```{r}
 # Testing: it's not perfect--perpendicular intersection is a problem, but not a huge one, I don't think
-route <- "M15"
+route <- "M15+"
 
 filtered_intersections_fortest <- final_filtered_intersections %>%
   filter(Route_ID == route)
@@ -299,13 +299,22 @@ df_complete <- df_speeds %>%
   summarise(bus_lane_ft = sum(tot_buslane_ft, na.rm = TRUE), .groups = "drop") %>%
   right_join(df_speeds, by = c("Route_ID", "date", "day_type", "period"))
 
+route_length <- merged_routes %>%
+  select(Route_ID, total_length_ft) %>%
+  mutate(route_length_miles = as.numeric(total_length_ft/5280)) %>%
+  select(!total_length_ft)
+
+df_complete <- df_complete %>%
+  left_join(route_length, by = "Route_ID")
+
 df_complete <- df_complete %>%
   mutate(bus_lane_ft = case_when(
     is.na(bus_lane_ft) ~ 0,
     TRUE ~ bus_lane_ft
   )) %>% 
   mutate(lane_miles = bus_lane_ft/5286) %>%
-  mutate(lane_perc = lane_miles / total_mileage * 100)
+  mutate(lane_perc = lane_miles / route_length_miles * 100)
+
 ```
 
 ```{r}
@@ -335,7 +344,8 @@ df_modeling <- df_complete %>%
     year,
     month,
     lane_perc,
-    lane_miles
+    lane_miles,
+    route_length_miles
   ) %>%
   mutate(
     route_num = as.integer(factor(Route_ID)),
@@ -363,7 +373,12 @@ df_modeling <- df_complete %>%
   rename(
     'peak' = 'period',
     'weekend' = 'day_type'
-  )
+  ) %>%
+  filter(!is.na(route_length_miles)) %>%
+  mutate(lane_perc = case_when(
+    lane_perc > 100 ~ 100,
+    TRUE ~ lane_perc
+  ))
 
 summary(df_modeling)
 ```

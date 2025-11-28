@@ -32,7 +32,7 @@ fit1 <- stan_glm(average_speed ~ lane_perc,
 
 summary(fit1, digits = 3)
 
-# Interpretation: average speed across the sample was 9.447 mph, an increase of 1 in lane_perc (+ 1 percentage point additional lane coverage) is associated with an increase of 1.2 mph on average
+# Interpretation: 
 
 # R-Hat: all at 1.0
 ```
@@ -51,7 +51,7 @@ fit2 <- stan_glm(average_speed ~ lane_perc +
 
 summary(fit2, digits = 3)
 
-# Interpretation: average speed across the sample for Manhattan was 6.662 mph, an increase of 1 in lane_perc (+ 1 percentage point additional lane coverage) is associated with an increase of 1.1 mph on average
+# Interpretation: 
 
 # R-Hat: all at 1.0
 ```
