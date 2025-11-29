@@ -10,8 +10,8 @@ data {
   int<lower=1> J; // num month periods
   array[N] int<lower=1,upper=J> j_index; // month index
   
-  int<lower=1> L; // num boroughs
-  array[N] int<lower=1,upper=L> l_index; // borough index
+  int<lower=1> L; // num trip_type
+  array[N] int<lower=1,upper=L> l_index; // trip_type index
   
   // hierarchical variables
   int <lower=1> R; // num route_ids
@@ -21,8 +21,7 @@ parameters {
   real beta0; // intercept
   vector[I] beta_i; // year-level fixed effects
   vector[J] beta_j; // month-level fixed effects
-  vector[L] beta_l; // borough-level fixed effects
-  vector[L] beta_l_z; // interaction effect of borough with treatment z
+  sum_to_zero_vector[L] beta_l_z; // interaction effect of trip_type with treatment z
   vector[R] beta_r; // route-level random effects
   
   real<lower=0> sigma_r; // route-level variance
@@ -35,7 +34,6 @@ model {
   beta0 ~ normal(0, 5);
   beta_i ~ normal(0, 1);
   beta_j ~ normal(0, 1);
-  beta_l ~ normal(0, 1);
   beta_l_z ~ normal(0, 2);
   beta_r ~ normal(0, sigma_r);
   sigma_r ~ normal(0, 1);
@@ -45,7 +43,7 @@ model {
   // Linear predictor
   vector[N] mu;
   for (n in 1:N) {
-    mu[n] = beta0 + beta_i[i_index[n]] + beta_j[j_index[n]] + beta_l[l_index[n]] + beta_r[r_index[n]] + theta * z[n] + beta_l_z[l_index[n]] * z[n];
+    mu[n] = beta0 + beta_i[i_index[n]] + beta_j[j_index[n]] + beta_r[r_index[n]] + theta * z[n] + beta_l_z[l_index[n]] * z[n];
   }
   
   // Likelihood

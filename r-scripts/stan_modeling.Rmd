@@ -90,8 +90,8 @@ I <- max(as.numeric(df$year))
 i_index <- as.numeric(df$year)
 J <- max(as.numeric(df$month))
 j_index <- as.numeric(df$month)
-L <- max(as.numeric(df$borough))
-l_index <- as.numeric(df$borough)
+L <- max(as.numeric(df$trip_type))
+l_index <- as.numeric(df$trip_type)
 R <- max(as.numeric(df$route_num))
 r_index <- as.numeric(df$route_num)
 
@@ -144,7 +144,7 @@ fit5 <- model5$sample(data = data, parallel_chains = 4, refresh = 0)
 
 ```{r}
 fit5$save_object(file = "../stan_models/fit5_saved.rds")
-fit5$summary(variables = c("beta0", "theta", "beta_l_z", "sigma", "sigma_r", "beta_i", "beta_j", "beta_l"))
+fit5$summary(variables = c("beta0", "theta", "beta_l_z", "sigma", "sigma_r", "beta_i", "beta_j"))
 ```
 
 Further modeling thoughts

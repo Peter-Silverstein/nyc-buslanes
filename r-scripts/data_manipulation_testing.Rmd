@@ -10,7 +10,6 @@ library(tidyverse)
 library(httr)
 library(stringr)
 library(purrr)
-library(rstanarm)
 library(sf)
 library(jsonlite)
 library(geojsonsf)
@@ -149,9 +148,17 @@ route_shapes_sf <- st_sf(route_shapes)
 ```
 
 ```{r}
+# Getting accurate route geoms
+route_shapes_filt_sf <- route_shapes_sf %>% 
+  group_by(Route_ID) %>%
+  top_n(1, Shape_Length)
+```
+
+
+```{r}
 # Merging Route Shapes
 # Transform CRS for accurate length measurement (using NYC feet CRS as example)
-route_shapes_proj <- st_transform(route_shapes_sf, 2263)  
+route_shapes_proj <- st_transform(route_shapes_filt_sf, 2263)  
 
 # Group by Route_ID only to combine both directions
 merged_routes_both_directions <- route_shapes_proj %>%

@@ -10,10 +10,10 @@ library(tidyverse)
 library(ggplot2)
 library(tmap)
 library(httr)
-library(jsonlite)
 library(sf)
 library(units)
-library(leaflet)
+library(spatstat)
+library(raster)
 ```
 
 ```{r}
@@ -50,7 +50,7 @@ merged_routes_both_directions <- route_shapes_proj %>%
 merged_routes <- merged_routes_both_directions %>%
   mutate(total_length_ft = st_length(geometry))
 
-bus_routes_proj <- st_transform(merged_routes, 4326)
+bus_routes_proj <- st_transform(merged_routes, 2263)
 ```
 
 ```{r}
@@ -71,7 +71,7 @@ subway_stops_sf <- st_as_sf(
   remove = FALSE
 )
 
-subway_stops_reproj <- st_transform(subway_stops_sf, 4326)
+subway_stops_reproj <- st_transform(subway_stops_sf, 2263)
 ```
 
 ```{r}
@@ -101,37 +101,68 @@ st_crs(bus_lanes_sf) <- 4326
 bus_lanes_sf <- bus_lanes_sf %>%
   distinct(segmentid, .keep_all = TRUE)
 
-bus_lanes_proj <- st_transform(bus_lanes_sf, 4326)
+bus_lanes_proj <- st_transform(bus_lanes_sf, 2263)
 ```
 
 ```{r}
 # Existing lane count
 lion <- st_read("../data/lion.gdb", layer = "lion")
-lion_proj <- st_transform(lion, 4326)
+lion_proj <- st_transform(lion, 2263)
 ```
 
-Next: interactive Map for exploration
+Next: KDE Map of Routes for exploration
 ```{r}
-# Assume 'routes_sf' is your sf data frame with LINESTRING geometries
-# Step 1: Add a route_id or group for styling (or compute density)
-merged_routes_4326 <- st_transform(merged_routes, crs = 4326)
-routes_sf <- merged_routes_4326 %>%
-  mutate(route_density = 2)  # Placeholder; replace with overlap count per segment
+bus_routes_proj_clean <- bus_routes_proj %>%
+  st_cast("LINESTRING") %>%           
+  filter(st_is_valid(geometry), 
+         st_length(geometry) > set_units(0, "ft")) 
 
-# Step 2: Create interactive map
-leaflet() %>%
-  addTiles() %>%  # Base map
-  addPolylines(
-    data = routes_sf,
-    color = ~colorNumeric(palette = "Reds", domain = routes_sf$route_density)(route_density),
-    weight = ~pmin(route_density * 2, 10),  # Scale width by density
-    opacity = ~pmin(route_density / max(route_density), 0.9),  # Fade low-density
-    popup = ~paste("Route density:", route_density),  # Interactive popup
-    group = "Bus Routes"
-  ) %>%
-  setView(lng = -74.0, lat = 40.7, zoom = 11) %>%  # NYC example
-  addLayersControl()
+bus_route_points <- st_line_sample(bus_routes_proj_clean, density = 1/100)
+
+points_sf <- st_sf(geometry = st_cast(bus_route_points, "POINT"))
+
+# Convert points to spatstat point pattern (ppp) object
+bbox <- st_bbox(points_sf)
+win <- spatstat.geom::owin(xrange = c(bbox["xmin"], bbox["xmax"]), yrange = c(bbox["ymin"], bbox["ymax"]))
+ppp_points <- spatstat.geom::ppp(st_coordinates(points_sf)[,1], st_coordinates(points_sf)[,2], window=win)
+
+# Calculate kernel density estimate raster
+kde_raster <- spatstat.explore::density.ppp(ppp_points, sigma=500, at="pixels", eps=c(50,50))
+
+# Convert spatstat density object to raster
+kde_r <- raster::raster(kde_raster)
+
+# Optional: Transform raster CRS to 2263 if needed
+crs(kde_r) <- "+init=EPSG:2263"
+
+# Plot KDE raster with tmap
+tm_shape(kde_r) + tm_raster(palette = "YlOrRd", title = "Route Density") +
+  tm_shape(points_sf) + tm_dots(size = 0.1, col = "blue") +
+  tm_layout(title = "Bus Route KDE")
 ```
+
 
 Possible ideas if too many options
 1. select shorter routes
+
+
+```{r}
+# Load in data
+df <- read_csv("../data/final_modeling_data.csv")
+df <- df %>%
+  filter(year > 2021) %>%
+  mutate(year = year - 2021) %>%
+  filter(peak == 1)
+```
+
+```{r}
+plot <- ggplot(data = df, aes(x = lane_perc, y = average_speed)) + 
+  geom_point() + 
+  geom_smooth(
+    method = "loess",
+    method.args = list(span = 0.1, degree = 2)
+  )
+
+plot
+```
+
