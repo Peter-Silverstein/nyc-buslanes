@@ -6,25 +6,132 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(tmap)
+library(httr)
+library(jsonlite)
+library(sf)
+library(units)
+library(leaflet)
 ```
 
-## R Markdown
+```{r}
+# Bus routes along corridor
+# Loading Bus Route Geometries: https://data.ny.gov/Transportation/MTA-Bus-Routes/bzwk-3hb4/explore/query/SELECT%0A%20%20%60valid_from%60%2C%0A%20%20%60valid_to%60%2C%0A%20%20%60route_id%60%2C%0A%20%20%60route_short_name%60%2C%0A%20%20%60route_long_name%60%2C%0A%20%20%60route_description%60%2C%0A%20%20%60trip_type%60%2C%0A%20%20%60route_type%60%2C%0A%20%20%60bundle%60%2C%0A%20%20%60route_color%60%2C%0A%20%20%60direction_id%60%2C%0A%20%20%60direction%60%2C%0A%20%20%60shape_id%60%2C%0A%20%20%60vertices%60%2C%0A%20%20%60shape_length%60%2C%0A%20%20%60min_longitude%60%2C%0A%20%20%60min_latitude%60%2C%0A%20%20%60max_longitude%60%2C%0A%20%20%60max_latitude%60%2C%0A%20%20%60geometry%60%0AWHERE%20%60valid_to%60%20%3E%20%222025-01-01T11%3A13%3A22%22%20%3A%3A%20floating_timestamp%0AORDER%20BY%0A%20%20%60valid_from%60%20DESC%20NULL%20LAST%2C%0A%20%20%60route_id%60%20ASC%20NULL%20LAST%2C%0A%20%20%60valid_to%60%20DESC%20NULL%20LAST/page/filter
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+route_shapes <- read_csv("../data/MTA_Bus_Routes.csv")
+colnames(route_shapes) <- gsub(" ", "_", colnames(route_shapes))
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+route_shapes <- route_shapes %>%
+  filter(Route_Type %in% c("Local", "Express", "SBS"))
+  
+route_shapes$Geometry <- st_as_sfc(route_shapes$Geometry, crs=4326)
+invalid = !st_is_valid(route_shapes$Geometry)
+if (any(invalid)) {
+  route_shapes$Geometry[invalid] <- st_make_valid(route_shapes$Geometry[invalid])
+}
+route_shapes_sf <- st_sf(route_shapes)
 
-```{r cars}
-summary(cars)
+# Merging Route Shapes
+# Transform CRS for accurate length measurement (using NYC feet CRS as example)
+route_shapes_proj <- st_transform(route_shapes_sf, 2263)  
+
+# Group by Route_ID only to combine both directions
+merged_routes_both_directions <- route_shapes_proj %>%
+  group_by(Route_ID) %>%
+  summarize(geometry = st_union(Geometry), .groups = "drop") %>%
+  # Simplify geometries to dissolve minor overlaps and clean up
+  mutate(geometry = st_simplify(geometry, dTolerance = set_units(10, "ft"))) %>%
+  # Check and fix invalid geometries
+  mutate(geometry = if_else(!st_is_valid(geometry), st_make_valid(geometry), geometry))
+
+# Calculate total length per route, which now covers both directions combined
+merged_routes <- merged_routes_both_directions %>%
+  mutate(total_length_ft = st_length(geometry))
+
+bus_routes_proj <- st_transform(merged_routes, 4326)
 ```
 
-## Including Plots
+```{r}
+# Subway presence
+# Loading Subway Stops: https://data.ny.gov/Transportation/MTA-Subway-Stations/39hk-dx4f/about_data
+url <- "https://data.ny.gov/resource/39hk-dx4f.json?$limit=5000"
+res <- GET(url)
+if (status_code(res) != 200) {
+  stop("Request failed with status: ", status_code(res))
+}
+subway_stops <- fromJSON(content(res, "text"), flatten = TRUE) %>%
+  select(gtfs_stop_id, gtfs_longitude, gtfs_latitude)
 
-You can also embed plots, for example:
+subway_stops_sf <- st_as_sf(
+  subway_stops,
+  coords = c("gtfs_longitude", "gtfs_latitude"),
+  crs = 4326,
+  remove = FALSE
+)
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+subway_stops_reproj <- st_transform(subway_stops_sf, 4326)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r}
+# Existing bus lanes
+# Loading Bus Lanes - Local Streets: https://data.cityofnewyork.us/Transportation/Bus-Lanes-Local-Streets/ycrg-ses3/about_data 
+url <- "https://data.cityofnewyork.us/resource/ycrg-ses3.json?$limit=5000"
+res <- GET(url)
+if (status_code(res) != 200) {
+  stop("Request failed with status: ", status_code(res))
+}
+local_streets <- fromJSON(content(res, "text"), flatten = TRUE)
+
+# Create GeoJSON strings for each row from the_geom.type and the_geom.coordinates
+geojson_strings <- mapply(function(t, coords) {
+  toJSON(list(type = t, coordinates = coords), auto_unbox = TRUE)
+}, local_streets$the_geom.type, local_streets$the_geom.coordinates)
+
+# Convert each GeoJSON geometry string to sf geometry objects
+geoms_sf <- geojsonsf::geojson_sf(paste0('{"type":"Feature","geometry":', geojson_strings, '}'))
+
+# Combine geometries with attributes (dropping original the_geom columns)
+bus_lanes_sf <- st_sf(local_streets[, !(names(local_streets) %in% c("the_geom.type", "the_geom.coordinates", "the_geom"))], geometry = geoms_sf$geometry)
+
+# Coordinate reference system likely WGS84
+st_crs(bus_lanes_sf) <- 4326
+
+bus_lanes_sf <- bus_lanes_sf %>%
+  distinct(segmentid, .keep_all = TRUE)
+
+bus_lanes_proj <- st_transform(bus_lanes_sf, 4326)
+```
+
+```{r}
+# Existing lane count
+lion <- st_read("../data/lion.gdb", layer = "lion")
+lion_proj <- st_transform(lion, 4326)
+```
+
+Next: interactive Map for exploration
+```{r}
+# Assume 'routes_sf' is your sf data frame with LINESTRING geometries
+# Step 1: Add a route_id or group for styling (or compute density)
+merged_routes_4326 <- st_transform(merged_routes, crs = 4326)
+routes_sf <- merged_routes_4326 %>%
+  mutate(route_density = 2)  # Placeholder; replace with overlap count per segment
+
+# Step 2: Create interactive map
+leaflet() %>%
+  addTiles() %>%  # Base map
+  addPolylines(
+    data = routes_sf,
+    color = ~colorNumeric(palette = "Reds", domain = routes_sf$route_density)(route_density),
+    weight = ~pmin(route_density * 2, 10),  # Scale width by density
+    opacity = ~pmin(route_density / max(route_density), 0.9),  # Fade low-density
+    popup = ~paste("Route density:", route_density),  # Interactive popup
+    group = "Bus Routes"
+  ) %>%
+  setView(lng = -74.0, lat = 40.7, zoom = 11) %>%  # NYC example
+  addLayersControl()
+```
+
+Possible ideas if too many options
+1. select shorter routes
