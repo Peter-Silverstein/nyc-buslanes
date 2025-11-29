@@ -1,5 +1,6 @@
 # Large Data Files
 data/MTA_Bus_Routes.csv
+data/lion.gdb/
 
 # History files
 .Rhistory
