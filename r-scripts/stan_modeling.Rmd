@@ -143,7 +143,7 @@ fit5 <- model5$sample(data = data, parallel_chains = 4, refresh = 0)
 ```
 
 ```{r}
-fit5$save_object(file = "../stan_models/fit5_saved.rds")
+#fit5$save_object(file = "../stan_models/fit5_saved.rds")
 fit5$summary(variables = c("beta0", "theta", "beta_l_z", "sigma", "sigma_r", "beta_i", "beta_j"))
 ```
 
@@ -152,12 +152,80 @@ Further modeling thoughts
 2. what does the borough-level effect tell us?
 3. run a version where first observation has 0, how do the coefs change (sensitivity analysis)
 
+```{r}
+# Sensitivity Analysis
+starts_at_0 <- df %>%
+  filter(year == 1, month == "01", lane_perc < 1) %>%
+  select(Route_ID)
 
+df2 <- df %>%
+  filter(Route_ID %in% starts_at_0$Route_ID)
 
+# Stan setup
+N2 <- as.numeric(nrow(df))
+y2 <- as.numeric(df$average_speed)
+z2 <- as.numeric(df$lane_perc)
+I2 <- max(as.numeric(df$year))
+i_index2 <- as.numeric(df$year)
+J2 <- max(as.numeric(df$month))
+j_index2 <- as.numeric(df$month)
+L2 <- max(as.numeric(df$trip_type))
+l_index2 <- as.numeric(df$trip_type)
+R2 <- max(as.numeric(df$route_num))
+r_index2 <- as.numeric(df$route_num)
 
+data2 <- list(
+  N = N2,
+  y = y2,
+  z = z2,
+  I = I2,
+  i_index = i_index2,
+  J = J2,
+  j_index = j_index2,
+  L = L2,
+  l_index = l_index2,
+  R = R2,
+  r_index = r_index2
+)
+```
 
+```{r}
+# Model 4 Again
 
+# Model 4: regression of continuous treatment on outcome variable, plus covariates, plus route_id mlm
+model4 <- cmdstan_model("../stan/model4.stan")
 
+set.seed(55)
+
+fit4_2 <- model4$sample(data = data2, parallel_chains = 4, refresh = 0)
+
+# Interpretation: average speed across the sample was 9.17320279 mph, an increase of 1 in lane_perc (+ 1 percentage point additional lane coverage) is associated with an increase of 0.45008774 mph on average
+
+# R-Hat: all well below 1.1
+```
+
+```{r}
+fit4_2$summary(variables = c("beta0", "theta", "sigma", "sigma_r", "beta_i", "beta_j", "beta_l"))
+```
+
+```{r}
+# Model 5 Again
+
+# Model 5: regression of continuous treatment on outcome variable, plus covariates, plus route_id mlm, plus borough-level treatment interaction
+model5 <- cmdstan_model("../stan/model5.stan")
+
+set.seed(55)
+
+fit5_2 <- model5$sample(data = data2, parallel_chains = 4, refresh = 0)
+
+# Interpretation: average speed across the sample was 9.17320279 mph, an increase of 1 in lane_perc (+ 1 percentage point additional lane coverage) is associated with an increase of 0.45008774 mph on average
+
+# R-Hat: all well below 1.1
+```
+
+```{r}
+fit5_2$summary(variables = c("beta0", "theta", "beta_l_z", "sigma", "sigma_r", "beta_i", "beta_j"))
+```
 
 
 
