@@ -126,7 +126,12 @@ bus_lanes_sf <- st_sf(local_streets[, !(names(local_streets) %in% c("the_geom.ty
 st_crs(bus_lanes_sf) <- 4326
 
 bus_lanes_sf <- bus_lanes_sf %>%
-  distinct(segmentid, .keep_all = TRUE)
+  distinct(segmentid, .keep_all = TRUE) %>%
+  filter(
+    lane_type1 %in% c("Bus Lane", "Busway", "SBS Bus Lane"),  # True lanes only
+    !str_detect(hours, "queue|signal|stop"),  # No queue jumps/stop bays
+    days != "None"  # 24/7 or peak lanes only
+  )
 ```
 
 ```{r}
@@ -148,115 +153,50 @@ route_shapes_sf <- st_sf(route_shapes)
 ```
 
 ```{r}
-# Getting accurate route geoms
-route_shapes_filt_sf <- route_shapes_sf %>% 
-  group_by(Route_ID) %>%
-  top_n(1, Shape_Length)
-```
-
-
-```{r}
-# Merging Route Shapes
-# Transform CRS for accurate length measurement (using NYC feet CRS as example)
-route_shapes_proj <- st_transform(route_shapes_filt_sf, 2263)  
-
-# Group by Route_ID only to combine both directions
-merged_routes_both_directions <- route_shapes_proj %>%
-  group_by(Route_ID) %>%
-  summarize(geometry = st_union(Geometry), .groups = "drop") %>%
-  # Simplify geometries to dissolve minor overlaps and clean up
-  mutate(geometry = st_simplify(geometry, dTolerance = set_units(10, "ft"))) %>%
-  # Check and fix invalid geometries
-  mutate(geometry = if_else(!st_is_valid(geometry), st_make_valid(geometry), geometry))
-
-# Calculate total length per route, which now covers both directions combined
-merged_routes <- merged_routes_both_directions %>%
-  mutate(total_length_ft = st_length(geometry))
+# Keep longest shape per Route_ID + direction_id only
+route_shapes_dir_sf <- route_shapes_sf %>%
+  filter(Route_Type %in% c("Local", "Express", "SBS")) %>%
+  filter(Route_ID %in% unique(df_combined$route_id)) %>%
+  st_transform(2263) %>%
+  mutate(Geometry = st_make_valid(Geometry)) %>%
+  # REMOVE slice_max - keep ALL shapes per direction
+  group_by(Route_ID, Direction_ID) %>%
+  summarise(Geometry = st_union(Geometry), .groups = "drop") %>%  # Unions ALL shapes
+  mutate(
+    total_length_ft = st_length(Geometry),
+    Geometry = st_simplify(Geometry, dTolerance = set_units(10, "ft"))
+  )
 ```
 
 ```{r}
-# Showing that lower bound of segment length for lanes is 25 feet, so that'll be the minimum intersection distance
-bus_lanes_sf_reproj2263 <- st_transform(bus_lanes_sf, 2263)
-bus_lanes_sf_reproj2263$length <- st_length(bus_lanes_sf_reproj2263$geometry)
-
-filt = bus_lanes_sf_reproj2263 %>%
-  filter(length < set_units(250, "ft"))
-hist(filt$length, breaks = 100)
-```
-
-```{r}
-# Reproject both datasets to EPSG 2263 (feet) for accurate snapping distance
 bus_lanes_proj <- st_transform(bus_lanes_sf, 2263)
-bus_routes_proj <- st_transform(merged_routes, 2263)
 
-# Set snapping tolerance to 20 feet
-snap_tolerance <- set_units(1000, "ft")
+# Buffer each direction separately
+route_shapes_dir_buffered <- st_buffer(route_shapes_dir_sf, dist = set_units(100, "ft"))
 
-# Perform snapping of bus route vertices to bus lane geometries
-# This moves route vertices within 20 feet to the nearest location on bus lanes
-bus_routes_snapped <- st_snap(bus_routes_proj, bus_lanes_proj, snap_tolerance)
+# Intersect with directional buffers (adds direction_id to intersections)
+bus_lane_intersections_dir <- st_intersection(bus_lanes_proj, route_shapes_dir_buffered) %>%
+  select(any_of(colnames(bus_lanes_proj)), Route_ID, Direction_ID) %>%
+  filter(st_geometry_type(.) %in% c("LINESTRING", "MULTILINESTRING")) %>%
+  mutate(length_ft = st_length(.)) %>%
+  filter(length_ft >= set_units(25, "ft"))
 
-# Calculate intersections between snapped bus routes and bus lanes
-line_intersections <- st_intersection(bus_lanes_proj, bus_routes_snapped)
-
-# Compute length of each intersection segment (in feet)
-line_intersections$length_ft <- st_length(line_intersections)
-
-# Filter intersections to those longer than 25 feet
-filtered_intersections_25 <- line_intersections[line_intersections$length_ft >= set_units(25, "ft"), ]
-
-# filtered_intersections_25 now contains bus lane-route overlap segments with cleaned snapping applied
-```
-
-```{r}
-# Assume all prior code is run, resulting in filtered_intersections_25 and bus_routes_proj
-
-buffer_dist <- set_units(50, "ft")
-
-# Create buffers around original bus routes (non-snapped)
-bus_routes_buffered <- st_buffer(bus_routes_proj, dist = buffer_dist)
-
-# Function to trim intersection geometries to within buffer zones of original routes
-trim_intersections_by_buffer <- function(intersections_sf, route_buffers_sf) {
-  # Join buffers to intersections on Route_ID
-  joined <- intersections_sf %>% 
-    left_join(route_buffers_sf %>% st_set_geometry(NULL), by = "Route_ID")
-  
-  # Spatially clip intersections by respective route buffers
-  trimmed_list <- list()
-  for (route_id in unique(joined$Route_ID)) {
-    buffer_geom <- route_buffers_sf %>% filter(Route_ID == route_id) %>% pull(geometry)
-    ints <- intersections_sf %>% filter(Route_ID == route_id)
-    trimmed <- st_intersection(ints, buffer_geom)
-    trimmed_list[[route_id]] <- trimmed
-  }
-  dplyr::bind_rows(trimmed_list)
-}
-
-trimmed_intersections <- suppressWarnings(trim_intersections_by_buffer(filtered_intersections_25, bus_routes_buffered))
-
-# Keep only line geometries
-trimmed_intersections <- trimmed_intersections[st_geometry_type(trimmed_intersections) %in% c("LINESTRING", "MULTILINESTRING"), ]
-
-# Recompute lengths to finalize filtering
-trimmed_intersections$length_ft <- st_length(trimmed_intersections)
-final_filtered_intersections <- trimmed_intersections[trimmed_intersections$length_ft >= set_units(25, "ft"), ]
 ```
 
 ```{r}
 # Testing: it's not perfect--perpendicular intersection is a problem, but not a huge one, I don't think
-route <- "M15+"
+route <- "QM1"
 
-filtered_intersections_fortest <- final_filtered_intersections %>%
+filtered_intersections_fortest <- bus_lane_intersections_dir %>%
   filter(Route_ID == route)
 
-bus_routes_proj_fortest <- bus_routes_proj %>%
+bus_routes_proj_fortest <- route_shapes_dir_buffered %>%
   filter(Route_ID == route)
 
 tmap_mode("view")  # Set tmap to interactive mode
 
 map_fortest <- tm_shape(filtered_intersections_fortest) + 
-  tm_lines(col = "red", lwd = 3, alpha = 0.7, legend.show = FALSE) +
+  tm_lines(col = "red", lwd = 2, alpha = 0.7, legend.show = FALSE) +
   tm_shape(bus_routes_proj_fortest) + 
   tm_lines(col = "blue", lwd = 2, alpha = 0.7, legend.show = FALSE) +
   tm_layout(title = paste("Bus Route", route, "with Bus Lane Intersections"),
@@ -268,59 +208,63 @@ map_fortest
 
 
 ```{r}
-# Cleaning up Intersection DF
-intersection_cleaned <- final_filtered_intersections %>%
-  select(boro, hours, days, lane_type1, open_dates, Route_ID, length_ft) %>%
+# Cleaning up directional intersections
+intersection_final_dir <- bus_lane_intersections_dir %>%
+  select(boro, hours, days, lane_type1, open_dates, Route_ID, Direction_ID, length_ft, segmentid) %>%
   mutate(open_date_str = sapply(str_split(open_dates, ","), `[`, 1)) %>%
   mutate(open_date = parse_date_time(open_date_str, orders = c("%m/%d/%Y", "%m/%d/%y"))) %>%
-  select(-open_date_str, -open_dates) %>%
   filter(!is.na(open_date)) %>%
-  mutate(open_date = case_when(
-    open_date == as.Date("2063-05-20") ~ as.Date("1963-05-20"),
-    TRUE ~ open_date
-  )) %>%
+  mutate(open_date = case_when(open_date == as.Date("2063-05-20") ~ as.Date("1963-05-20"), TRUE ~ open_date)) %>%
   st_drop_geometry() %>%
-  arrange(Route_ID, open_date)
-```
-
-```{r}
-# Aggregating bus lanes to date opened, NOTE THAT LOST SOME LANE CHARACTERISTICS
-intersection_final <- intersection_cleaned %>%
-  group_by(Route_ID, open_date) %>%
-  summarize(tot_buslane_ft = sum(length_ft))
-
-intersection_final <- intersection_final %>%
-  arrange(Route_ID, open_date) %>%
+  # DEDUPE HERE by segmentid + open_date
+  distinct(Route_ID, Direction_ID, segmentid, open_date, .keep_all = TRUE) %>%
+  group_by(Route_ID, Direction_ID, open_date) %>%
+  summarize(tot_buslane_ft = sum(length_ft), .groups = "drop") %>%
   mutate(tot_buslane_ft = as.numeric(tot_buslane_ft))
 ```
 
 ```{r}
 # Joining intersection_final to df_speeds
 df_speeds$date <- as.Date(df_speeds$date)
-intersection_final$open_date <- as.Date(intersection_final$open_date)
+intersection_final_dir$open_date <- as.Date(intersection_final_dir$open_date)
+
+# Directional route lengths
+route_length_dir <- route_shapes_dir_sf %>%
+  st_drop_geometry() %>%
+  mutate(route_length_miles = as.numeric(total_length_ft / 5280))
+
+# before the df_complete pipeline:
+df_speeds <- df_speeds %>% mutate(Route_ID = as.character(Route_ID))
+intersection_final_dir <- intersection_final_dir %>% mutate(Route_ID = as.character(Route_ID))
+route_length_dir <- route_length_dir %>% mutate(Route_ID = as.character(Route_ID))
 
 df_complete <- df_speeds %>%
-  left_join(intersection_final, by = "Route_ID", relationship = "many-to-many") %>%
-  filter(open_date <= date) %>%
+  left_join(intersection_final_dir %>% 
+              filter(open_date <= max(df_speeds$date, na.rm = TRUE)),
+            by = "Route_ID", relationship = "many-to-many") %>%
+  filter(date >= open_date | is.na(open_date)) %>%
+  # Aggregate at ROUTE level (ignores direction issues)
   group_by(Route_ID, date, day_type, period) %>%
   summarise(bus_lane_ft = sum(tot_buslane_ft, na.rm = TRUE), .groups = "drop") %>%
-  right_join(df_speeds, by = c("Route_ID", "date", "day_type", "period"))
+  # Average route length ACROSS all directions per route
+  left_join(route_length_dir %>% 
+              group_by(Route_ID) %>%
+              summarise(route_length_miles = sum(route_length_miles, na.rm = TRUE), 
+                       .groups = "drop"),
+            by = "Route_ID") %>%
+  mutate(
+    bus_lane_ft = coalesce(bus_lane_ft, 0),
+    lane_miles = bus_lane_ft / 5280,
+    lane_perc = case_when(
+      is.na(route_length_miles) | route_length_miles <= 0 ~ 0,
+      TRUE ~ pmin(pmax(lane_miles / route_length_miles * 100, 0), 100)
+    )
+  ) %>%
+  right_join(df_speeds %>% 
+               select(Route_ID, date, day_type, period, average_speed, 
+                      borough, trip_type, year, month),
+             by = c("Route_ID", "date", "day_type", "period"))
 
-route_length <- merged_routes %>%
-  select(Route_ID, total_length_ft) %>%
-  mutate(route_length_miles = as.numeric(total_length_ft/5280)) %>%
-  select(!total_length_ft)
-
-df_complete <- df_complete %>%
-  left_join(route_length, by = "Route_ID")
-
-df_complete <- df_complete %>%
-  mutate(bus_lane_ft = case_when(
-    is.na(bus_lane_ft) ~ 0,
-    TRUE ~ bus_lane_ft
-  )) %>% 
-  mutate(lane_miles = bus_lane_ft/5286) %>%
-  mutate(lane_perc = lane_miles / route_length_miles * 100)
 
 ```
 
@@ -395,4 +339,23 @@ summary(df_modeling)
 write_csv(df_modeling, "../data/final_modeling_data.csv")
 ```
 
+```{r}
+# Testing: it's not perfect--perpendicular intersection is a problem, but not a huge one, I don't think
+route <- "QM1"
 
+filtered_intersections_fortest <- bus_lane_intersections_dir %>%
+  filter(Route_ID == route)
+
+bus_routes_proj_fortest <- route_shapes_dir_buffered %>%
+  filter(Route_ID == route)
+
+tmap_mode("view")  # Set tmap to interactive mode
+
+map_fortest <- tm_shape(bus_routes_proj_fortest) + 
+  tm_lines(col = "blue", lwd = 2, alpha = 0.7, legend.show = FALSE) +
+  tm_layout(title = paste("Proposed Queens Blvd. Corridor: QM1 Example"),
+            legend.position = c("left", "bottom"))
+
+# Print the interactive map
+map_fortest
+```

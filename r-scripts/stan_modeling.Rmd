@@ -122,6 +122,7 @@ model4 <- cmdstan_model("../stan/model4.stan")
 set.seed(55)
 
 fit4 <- model4$sample(data = data, parallel_chains = 4, refresh = 0)
+# fit4 <- model4$optimize(data = data, refresh = 0)
 
 # Interpretation: average speed across the sample was 9.17320279 mph, an increase of 1 in lane_perc (+ 1 percentage point additional lane coverage) is associated with an increase of 0.45008774 mph on average
 
@@ -129,7 +130,7 @@ fit4 <- model4$sample(data = data, parallel_chains = 4, refresh = 0)
 ```
 
 ```{r}
-# fit4$save_object(file = "../stan_models/fit4_saved.rds")
+fit4$save_object(file = "../stan_models/fit4_saved_minlength.rds")
 fit4$summary(variables = c("beta0", "theta", "sigma", "sigma_r", "beta_i", "beta_j", "beta_m"))
 ```
 
@@ -140,6 +141,7 @@ model5 <- cmdstan_model("../stan/model5.stan")
 set.seed(55)
 
 fit5 <- model5$sample(data = data, parallel_chains = 4, refresh = 0)
+# fit5 <- model5$optimize(data = data, refresh = 0)
 
 # Interpretation: average speed across the sample for Manhattan was 6.662 mph, an increase of 1 in lane_perc (+ 1 percentage point additional lane coverage) is associated with an increase of 1.1 mph on average
 
@@ -147,7 +149,7 @@ fit5 <- model5$sample(data = data, parallel_chains = 4, refresh = 0)
 ```
 
 ```{r}
-#fit5$save_object(file = "../stan_models/fit5_saved.rds")
+fit5$save_object(file = "../stan_models/fit5_saved_minlength.rds")
 fit5$summary(variables = c("beta0", "theta", "beta_l_z", "sigma", "sigma_r", "beta_i", "beta_j"))
 ```
 
@@ -242,13 +244,62 @@ df_sum <- df %>%
     covg = mean(lane_perc),
     covg_max = max(lane_perc),
     covg_min = min(lane_perc),
-    covg_sd = sd(lane_per681)
+    covg_sd = sd(lane_perc)
   )
 df_sum
 ```
 
+```{r}
+df_sum <- df %>%
+  summarize(
+    covg = mean(lane_perc),
+    covg_max = max(lane_perc),
+    covg_min = min(lane_perc),
+    covg_sd = sd(lane_perc),
+    speed_avg = mean(average_speed),
+    speed_med = median(average_speed)
+  )
+df_sum
+```
 
+```{r}
+# full summary for selected parameters
+s <- fit4$summary()
 
+# convert to data frame and keep rownames
+tab <- as.data.frame(s)
+tab$parameter <- rownames(s)
+rownames(tab) <- NULL
 
+tab_nor <- subset(tab, !grepl("^beta_r", parameter))
 
+write.csv(tab_nor, "fit4_summary.csv", row.names = FALSE)
+```
 
+```{r}
+# full summary for selected parameters
+s <- fit5$summary()
+
+# convert to data frame and keep rownames
+tab <- as.data.frame(s)
+tab$parameter <- rownames(s)
+rownames(tab) <- NULL
+
+tab_nor <- subset(tab, !grepl("^beta_r", parameter))
+
+write.csv(tab_nor, "fit5_summary.csv", row.names = FALSE)
+```
+
+```{r}
+# full summary for selected parameters
+s <- fit4_2$summary()
+
+# convert to data frame and keep rownames
+tab <- as.data.frame(s)
+tab$parameter <- rownames(s)
+rownames(tab) <- NULL
+
+tab_nor <- subset(tab, !grepl("^beta_r", parameter))
+
+write.csv(tab_nor, "fit4_2_summary.csv", row.names = FALSE)
+```
